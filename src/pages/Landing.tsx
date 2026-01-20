@@ -33,7 +33,7 @@ export default function Landing() {
             <Brain className="w-8 h-8 text-pink-400" />
             <span className="text-xl font-serif font-bold text-foreground">AppliedMind</span>
           </Link>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 text-primary">
             <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">
               {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </Button>
