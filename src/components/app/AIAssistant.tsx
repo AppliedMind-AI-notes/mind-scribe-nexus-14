@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Sparkles,
@@ -12,6 +12,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useToast } from '@/hooks/use-toast';
 
 interface AIAssistantProps {
   noteContent: string;
@@ -25,15 +26,23 @@ interface QuizQuestion {
   correctIndex: number;
 }
 
+interface Explanation {
+  term: string;
+  explanation: string;
+}
+
+const AI_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assistant`;
+
 export default function AIAssistant({ noteContent }: AIAssistantProps) {
   const [activeMode, setActiveMode] = useState<AIMode>('summarize');
   const [loading, setLoading] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
-  const [explanations, setExplanations] = useState<{ term: string; explanation: string }[]>([]);
+  const [explanations, setExplanations] = useState<Explanation[]>([]);
   const [quiz, setQuiz] = useState<QuizQuestion[]>([]);
   const [selectedAnswers, setSelectedAnswers] = useState<Record<number, number>>({});
   const [codeHints, setCodeHints] = useState<string[]>([]);
   const [concepts, setConcepts] = useState<{ id: string; name: string }[]>([]);
+  const { toast } = useToast();
 
   const modes = [
     { id: 'summarize' as const, icon: FileText, label: 'Summarize' },
@@ -43,152 +52,199 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
     { id: 'concepts' as const, icon: Network, label: 'Concepts' },
   ];
 
-  // Heuristic-based AI simulation
-  const generateSummary = () => {
+  const handleAIError = useCallback((error: string) => {
+    toast({
+      variant: "destructive",
+      title: "AI Error",
+      description: error,
+    });
+  }, [toast]);
+
+  // Streaming summary generation
+  const generateSummary = useCallback(async () => {
+    if (!noteContent.trim()) {
+      setSummary('No content to summarize yet. Add some notes!');
+      return;
+    }
+
     setLoading(true);
-    setTimeout(() => {
-      const lines = noteContent.split('\n').filter(l => l.trim());
-      const headings = lines.filter(l => l.startsWith('#'));
-      const bullets = lines.filter(l => l.match(/^[-*]\s/));
-      
-      let summaryText = '## Summary\n\n';
-      
-      if (headings.length > 0) {
-        summaryText += '**Key Topics:**\n';
-        headings.slice(0, 5).forEach(h => {
-          summaryText += `- ${h.replace(/^#+\s*/, '')}\n`;
-        });
-        summaryText += '\n';
-      }
-      
-      if (bullets.length > 0) {
-        summaryText += '**Key Points:**\n';
-        bullets.slice(0, 5).forEach(b => {
-          summaryText += `${b}\n`;
-        });
+    setSummary('');
+
+    try {
+      const response = await fetch(AI_FUNCTION_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ mode: 'summarize', noteContent }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to generate summary');
       }
 
-      // Extract key equations
-      const equations = noteContent.match(/\$\$[\s\S]*?\$\$/g);
-      if (equations && equations.length > 0) {
-        summaryText += '\n**Key Equations:**\n';
-        equations.slice(0, 3).forEach(eq => {
-          summaryText += `${eq}\n\n`;
-        });
-      }
+      if (!response.body) throw new Error('No response body');
 
-      setSummary(summaryText || 'No content to summarize yet. Add some notes!');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let textBuffer = '';
+      let fullSummary = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        textBuffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex: number;
+        while ((newlineIndex = textBuffer.indexOf('\n')) !== -1) {
+          let line = textBuffer.slice(0, newlineIndex);
+          textBuffer = textBuffer.slice(newlineIndex + 1);
+
+          if (line.endsWith('\r')) line = line.slice(0, -1);
+          if (line.startsWith(':') || line.trim() === '') continue;
+          if (!line.startsWith('data: ')) continue;
+
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === '[DONE]') break;
+
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) {
+              fullSummary += content;
+              setSummary(fullSummary);
+            }
+          } catch {
+            textBuffer = line + '\n' + textBuffer;
+            break;
+          }
+        }
+      }
+    } catch (error) {
+      handleAIError(error instanceof Error ? error.message : 'Failed to generate summary');
+      setSummary(null);
+    } finally {
       setLoading(false);
-    }, 500);
-  };
+    }
+  }, [noteContent, handleAIError]);
 
-  const generateExplanations = () => {
+  // Non-streaming API call for structured responses
+  const callAI = useCallback(async (mode: 'explain' | 'quiz' | 'code'): Promise<string | null> => {
+    if (!noteContent.trim()) {
+      return null;
+    }
+
+    const response = await fetch(AI_FUNCTION_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      },
+      body: JSON.stringify({ mode, noteContent }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || `Failed to get ${mode} response`);
+    }
+
+    const data = await response.json();
+    return data.content;
+  }, [noteContent]);
+
+  const generateExplanations = useCallback(async () => {
+    if (!noteContent.trim()) {
+      setExplanations([{ term: 'No content', explanation: 'Add some notes to get explanations.' }]);
+      return;
+    }
+
     setLoading(true);
-    setTimeout(() => {
-      const terms: { term: string; explanation: string }[] = [];
-      
-      // Extract terms from headings
-      const headings = noteContent.match(/^#+\s+(.+)$/gm);
-      headings?.slice(0, 5).forEach(h => {
-        const term = h.replace(/^#+\s*/, '');
-        terms.push({
-          term,
-          explanation: `${term} is a key concept covered in this note. Review the section for detailed information.`,
-        });
-      });
-
-      // Extract LaTeX variables
-      const latexVars = noteContent.match(/\$([A-Z]_?\{?[a-z]*\}?)\$/g);
-      const uniqueVars = [...new Set(latexVars)];
-      uniqueVars?.slice(0, 5).forEach(v => {
-        const clean = v.replace(/\$/g, '');
-        terms.push({
-          term: clean,
-          explanation: `Variable ${clean} appears in equations throughout this note.`,
-        });
-      });
-
-      setExplanations(terms.length > 0 ? terms : [{ term: 'No terms found', explanation: 'Add some content with headings or equations.' }]);
-      setLoading(false);
-    }, 500);
-  };
-
-  const generateQuiz = () => {
-    setLoading(true);
-    setTimeout(() => {
-      const questions: QuizQuestion[] = [];
-      const headings = noteContent.match(/^#+\s+(.+)$/gm) || [];
-      
-      headings.slice(0, 5).forEach((heading, i) => {
-        const topic = heading.replace(/^#+\s*/, '');
-        questions.push({
-          question: `What is the main concept of "${topic}"?`,
-          options: [
-            `A fundamental principle in this topic`,
-            `An unrelated concept`,
-            `A specific implementation detail`,
-            `None of the above`,
-          ],
-          correctIndex: 0,
-        });
-      });
-
-      // Add equation-based questions
-      const equations = noteContent.match(/\$\$([^$]+)\$\$/g);
-      if (equations && equations.length > 0) {
-        questions.push({
-          question: 'Which equation is mentioned in the notes?',
-          options: [
-            equations[0].replace(/\$\$/g, '').trim().slice(0, 30) + '...',
-            'F = ma',
-            'E = hν',
-            'PV = nRT',
-          ],
-          correctIndex: 0,
-        });
+    try {
+      const content = await callAI('explain');
+      if (content) {
+        // Extract JSON from the response (in case there's extra text)
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as Explanation[];
+          setExplanations(parsed);
+        } else {
+          throw new Error('Invalid response format');
+        }
       }
+    } catch (error) {
+      handleAIError(error instanceof Error ? error.message : 'Failed to generate explanations');
+      setExplanations([{ term: 'Error', explanation: 'Failed to analyze content. Please try again.' }]);
+    } finally {
+      setLoading(false);
+    }
+  }, [noteContent, callAI, handleAIError]);
 
-      setQuiz(questions.length > 0 ? questions : [{
+  const generateQuiz = useCallback(async () => {
+    if (!noteContent.trim()) {
+      setQuiz([{
         question: 'Add more content to generate quiz questions!',
         options: ['OK', 'Sure', 'Will do', 'Understood'],
         correctIndex: 0,
       }]);
-      setSelectedAnswers({});
-      setLoading(false);
-    }, 500);
-  };
+      return;
+    }
 
-  const generateCodeHints = () => {
     setLoading(true);
-    setTimeout(() => {
-      const hints: string[] = [];
-      const codeBlocks = noteContent.match(/```python\n([\s\S]*?)```/g);
-
-      if (codeBlocks) {
-        codeBlocks.forEach(block => {
-          const code = block.replace(/```python\n|```/g, '');
-          
-          if (!code.includes('def ') && code.length > 100) {
-            hints.push('💡 Consider wrapping this code in a function for reusability.');
-          }
-          if (code.includes('print(') && code.includes('f"')) {
-            hints.push('✓ Good use of f-strings for formatted output!');
-          }
-          if (!code.includes('#')) {
-            hints.push('📝 Add comments to explain complex logic.');
-          }
-          if (code.includes('import math')) {
-            hints.push('✓ Using the math module for mathematical operations.');
-          }
-        });
+    try {
+      const content = await callAI('quiz');
+      if (content) {
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as QuizQuestion[];
+          setQuiz(parsed);
+          setSelectedAnswers({});
+        } else {
+          throw new Error('Invalid response format');
+        }
       }
-
-      setCodeHints(hints.length > 0 ? hints : ['No Python code blocks found in this note.']);
+    } catch (error) {
+      handleAIError(error instanceof Error ? error.message : 'Failed to generate quiz');
+      setQuiz([{
+        question: 'Failed to generate quiz. Please try again.',
+        options: ['OK'],
+        correctIndex: 0,
+      }]);
+    } finally {
       setLoading(false);
-    }, 500);
-  };
+    }
+  }, [noteContent, callAI, handleAIError]);
 
-  const extractConcepts = () => {
+  const generateCodeHints = useCallback(async () => {
+    if (!noteContent.trim() || !noteContent.includes('```')) {
+      setCodeHints(['No code blocks found in this note.']);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const content = await callAI('code');
+      if (content) {
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as string[];
+          setCodeHints(parsed);
+        } else {
+          throw new Error('Invalid response format');
+        }
+      }
+    } catch (error) {
+      handleAIError(error instanceof Error ? error.message : 'Failed to analyze code');
+      setCodeHints(['Failed to analyze code. Please try again.']);
+    } finally {
+      setLoading(false);
+    }
+  }, [noteContent, callAI, handleAIError]);
+
+  // Local concept extraction (kept as heuristic since it's for graph visualization)
+  const extractConcepts = useCallback(() => {
     setLoading(true);
     setTimeout(() => {
       const extracted: { id: string; name: string }[] = [];
@@ -215,8 +271,8 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
 
       setConcepts(extracted.slice(0, 10));
       setLoading(false);
-    }, 500);
-  };
+    }, 300);
+  }, [noteContent]);
 
   const handleModeChange = (mode: AIMode) => {
     setActiveMode(mode);
@@ -275,12 +331,12 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Regenerate'}
               </Button>
             </div>
-            {loading ? (
+            {loading && !summary ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-6 h-6 animate-spin text-accent" />
               </div>
             ) : summary ? (
-              <div className="prose prose-sm dark:prose-invert">
+              <div className="prose prose-sm dark:prose-invert max-w-none">
                 <div className="text-sm text-foreground/80 whitespace-pre-wrap">{summary}</div>
               </div>
             ) : (
@@ -296,20 +352,26 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Refresh'}
               </Button>
             </div>
-            <div className="space-y-4">
-              {explanations.map((item, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.1 }}
-                  className="p-3 rounded-lg bg-muted/50"
-                >
-                  <h4 className="font-medium text-sm mb-1">{item.term}</h4>
-                  <p className="text-xs text-muted-foreground">{item.explanation}</p>
-                </motion.div>
-              ))}
-            </div>
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin text-accent" />
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {explanations.map((item, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.1 }}
+                    className="p-3 rounded-lg bg-muted/50"
+                  >
+                    <h4 className="font-medium text-sm mb-1">{item.term}</h4>
+                    <p className="text-xs text-muted-foreground">{item.explanation}</p>
+                  </motion.div>
+                ))}
+              </div>
+            )}
           </TabsContent>
 
           {/* Quiz */}
@@ -320,41 +382,47 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'New Quiz'}
               </Button>
             </div>
-            <div className="space-y-6">
-              {quiz.map((q, qIndex) => (
-                <div key={qIndex} className="space-y-2">
-                  <p className="text-sm font-medium">{qIndex + 1}. {q.question}</p>
-                  <div className="space-y-1">
-                    {q.options.map((opt, oIndex) => {
-                      const isSelected = selectedAnswers[qIndex] === oIndex;
-                      const isCorrect = q.correctIndex === oIndex;
-                      const showResult = selectedAnswers[qIndex] !== undefined;
-                      
-                      return (
-                        <button
-                          key={oIndex}
-                          onClick={() => selectAnswer(qIndex, oIndex)}
-                          disabled={showResult}
-                          className={`quiz-option w-full text-left text-sm ${
-                            showResult
-                              ? isCorrect
-                                ? 'correct'
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin text-accent" />
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {quiz.map((q, qIndex) => (
+                  <div key={qIndex} className="space-y-2">
+                    <p className="text-sm font-medium">{qIndex + 1}. {q.question}</p>
+                    <div className="space-y-1">
+                      {q.options.map((opt, oIndex) => {
+                        const isSelected = selectedAnswers[qIndex] === oIndex;
+                        const isCorrect = q.correctIndex === oIndex;
+                        const showResult = selectedAnswers[qIndex] !== undefined;
+                        
+                        return (
+                          <button
+                            key={oIndex}
+                            onClick={() => selectAnswer(qIndex, oIndex)}
+                            disabled={showResult}
+                            className={`quiz-option w-full text-left text-sm ${
+                              showResult
+                                ? isCorrect
+                                  ? 'correct'
+                                  : isSelected
+                                  ? 'incorrect'
+                                  : ''
                                 : isSelected
-                                ? 'incorrect'
+                                ? 'selected'
                                 : ''
-                              : isSelected
-                              ? 'selected'
-                              : ''
-                          }`}
-                        >
-                          {opt}
-                        </button>
-                      );
-                    })}
+                            }`}
+                          >
+                            {opt}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </TabsContent>
 
           {/* Code Help */}
@@ -365,19 +433,25 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Analyze'}
               </Button>
             </div>
-            <div className="space-y-3">
-              {codeHints.map((hint, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, x: 10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.1 }}
-                  className="p-3 rounded-lg bg-muted/50 text-sm"
-                >
-                  {hint}
-                </motion.div>
-              ))}
-            </div>
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin text-accent" />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {codeHints.map((hint, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, x: 10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.1 }}
+                    className="p-3 rounded-lg bg-muted/50 text-sm"
+                  >
+                    {hint}
+                  </motion.div>
+                ))}
+              </div>
+            )}
           </TabsContent>
 
           {/* Concepts */}
