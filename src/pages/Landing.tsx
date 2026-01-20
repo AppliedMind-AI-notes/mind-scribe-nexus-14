@@ -3,49 +3,38 @@ import { Link } from 'react-router-dom';
 import { Brain, BookOpen, Sparkles, Code, Network, ArrowRight, Moon, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/contexts/ThemeContext';
-
-const features = [
-  {
-    icon: BookOpen,
-    title: 'Rich Knowledge Canvas',
-    description: 'Write notes with Markdown, LaTeX equations, and code blocks. Everything you need for serious learning.',
-  },
-  {
-    icon: Sparkles,
-    title: 'AI Learning Assistant',
-    description: 'Get summaries, explanations, quizzes, and code help powered by intelligent heuristics.',
-  },
-  {
-    icon: Code,
-    title: 'Code Execution',
-    description: 'Run Python code directly in your notes. See results instantly in the output dock.',
-  },
-  {
-    icon: Network,
-    title: 'Concept Mapping',
-    description: 'Visualize knowledge as interconnected concepts. See how ideas relate to each other.',
-  },
-];
-
+const features = [{
+  icon: BookOpen,
+  title: 'Rich Knowledge Canvas',
+  description: 'Write notes with Markdown, LaTeX equations, and code blocks. Everything you need for serious learning.'
+}, {
+  icon: Sparkles,
+  title: 'AI Learning Assistant',
+  description: 'Get summaries, explanations, quizzes, and code help powered by intelligent heuristics.'
+}, {
+  icon: Code,
+  title: 'Code Execution',
+  description: 'Run Python code directly in your notes. See results instantly in the output dock.'
+}, {
+  icon: Network,
+  title: 'Concept Mapping',
+  description: 'Visualize knowledge as interconnected concepts. See how ideas relate to each other.'
+}];
 export default function Landing() {
-  const { theme, toggleTheme } = useTheme();
-
-  return (
-    <div className="min-h-screen bg-background">
+  const {
+    theme,
+    toggleTheme
+  } = useTheme();
+  return <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="fixed top-0 left-0 right-0 z-50 glass-panel border-b">
         <div className="container mx-auto px-6 h-16 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
-            <Brain className="w-8 h-8 text-accent" />
+            <Brain className="w-8 h-8 text-pink-400" />
             <span className="text-xl font-serif font-bold text-foreground">AppliedMind</span>
           </Link>
           <div className="flex items-center gap-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={toggleTheme}
-              aria-label="Toggle theme"
-            >
+            <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">
               {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </Button>
             <Link to="/login">
@@ -61,11 +50,15 @@ export default function Landing() {
       {/* Hero Section */}
       <section className="pt-32 pb-20 px-6">
         <div className="container mx-auto max-w-5xl text-center">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-          >
+          <motion.div initial={{
+          opacity: 0,
+          y: 20
+        }} animate={{
+          opacity: 1,
+          y: 0
+        }} transition={{
+          duration: 0.6
+        }}>
             <h1 className="text-5xl md:text-7xl font-serif font-bold mb-6 leading-tight">
               Learn Deeply with{' '}
               <span className="gradient-text">AI-Powered</span>{' '}
@@ -95,13 +88,15 @@ export default function Landing() {
       {/* Features Grid */}
       <section className="py-20 px-6 bg-canvas">
         <div className="container mx-auto max-w-6xl">
-          <motion.div
-            initial={{ opacity: 0 }}
-            whileInView={{ opacity: 1 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.6 }}
-            className="text-center mb-16"
-          >
+          <motion.div initial={{
+          opacity: 0
+        }} whileInView={{
+          opacity: 1
+        }} viewport={{
+          once: true
+        }} transition={{
+          duration: 0.6
+        }} className="text-center mb-16">
             <h2 className="text-4xl font-serif font-bold mb-4">
               Everything You Need to Master Any Subject
             </h2>
@@ -112,22 +107,24 @@ export default function Landing() {
           </motion.div>
 
           <div className="grid md:grid-cols-2 gap-8">
-            {features.map((feature, index) => (
-              <motion.div
-                key={feature.title}
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.5, delay: index * 0.1 }}
-                className="glass-card p-8 hover:shadow-glow transition-all duration-300"
-              >
+            {features.map((feature, index) => <motion.div key={feature.title} initial={{
+            opacity: 0,
+            y: 20
+          }} whileInView={{
+            opacity: 1,
+            y: 0
+          }} viewport={{
+            once: true
+          }} transition={{
+            duration: 0.5,
+            delay: index * 0.1
+          }} className="glass-card p-8 hover:shadow-glow transition-all duration-300">
                 <div className="w-12 h-12 rounded-lg bg-accent/10 flex items-center justify-center mb-4">
                   <feature.icon className="w-6 h-6 text-accent" />
                 </div>
                 <h3 className="text-xl font-serif font-semibold mb-2">{feature.title}</h3>
                 <p className="text-muted-foreground">{feature.description}</p>
-              </motion.div>
-            ))}
+              </motion.div>)}
           </div>
         </div>
       </section>
@@ -135,13 +132,17 @@ export default function Landing() {
       {/* CTA Section */}
       <section className="py-24 px-6">
         <div className="container mx-auto max-w-4xl text-center">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            whileInView={{ opacity: 1, scale: 1 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.5 }}
-            className="glass-card p-12 glow-accent"
-          >
+          <motion.div initial={{
+          opacity: 0,
+          scale: 0.95
+        }} whileInView={{
+          opacity: 1,
+          scale: 1
+        }} viewport={{
+          once: true
+        }} transition={{
+          duration: 0.5
+        }} className="glass-card p-12 glow-accent">
             <h2 className="text-3xl md:text-4xl font-serif font-bold mb-4">
               Ready to Transform Your Learning?
             </h2>
@@ -170,6 +171,5 @@ export default function Landing() {
           </p>
         </div>
       </footer>
-    </div>
-  );
+    </div>;
 }
