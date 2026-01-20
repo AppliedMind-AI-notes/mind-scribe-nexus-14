@@ -59,9 +59,9 @@ export default function Landing() {
         }} transition={{
           duration: 0.6
         }}>
-            <h1 className="text-5xl md:text-7xl font-serif font-bold mb-6 leading-tight">
+            <h1 className="text-5xl font-serif mb-6 leading-tight md:text-5xl font-medium">
               Learn Deeply with{' '}
-              <span className="gradient-text">AI-Powered</span>{' '}
+              <span className="gradient-text text-pink-400 font-serif text-center font-light text-6xl">AI-Powered</span>{' '}
               Intelligence
             </h1>
             <p className="text-xl md:text-2xl text-muted-foreground mb-10 max-w-3xl mx-auto leading-relaxed">
