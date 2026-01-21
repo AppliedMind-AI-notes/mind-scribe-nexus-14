@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
 
 interface AIAssistantProps {
   noteContent: string;
@@ -32,6 +33,12 @@ interface Explanation {
 }
 
 const AI_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assistant`;
+
+// Helper to get the current session token
+async function getAuthToken(): Promise<string | null> {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.access_token ?? null;
+}
 
 export default function AIAssistant({ noteContent }: AIAssistantProps) {
   const [activeMode, setActiveMode] = useState<AIMode>('summarize');
@@ -71,11 +78,16 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
     setSummary('');
 
     try {
+      const token = await getAuthToken();
+      if (!token) {
+        throw new Error('Please sign in to use the AI assistant');
+      }
+
       const response = await fetch(AI_FUNCTION_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ mode: 'summarize', noteContent }),
       });
@@ -137,11 +149,16 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
       return null;
     }
 
+    const token = await getAuthToken();
+    if (!token) {
+      throw new Error('Please sign in to use the AI assistant');
+    }
+
     const response = await fetch(AI_FUNCTION_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ mode, noteContent }),
     });
