@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   Sparkles,
@@ -8,12 +8,15 @@ import {
   Network,
   Lightbulb,
   Loader2,
+  Clock,
+  AlertCircle,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { Progress } from '@/components/ui/progress';
 
 interface AIAssistantProps {
   noteContent: string;
@@ -32,7 +35,15 @@ interface Explanation {
   explanation: string;
 }
 
+interface RateLimitInfo {
+  remaining: number;
+  limit: number;
+  resetAt: number | null;
+  isLimited: boolean;
+}
+
 const AI_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assistant`;
+const DEFAULT_RATE_LIMIT = 10;
 
 // Helper to get the current session token
 async function getAuthToken(): Promise<string | null> {
@@ -49,6 +60,13 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
   const [selectedAnswers, setSelectedAnswers] = useState<Record<number, number>>({});
   const [codeHints, setCodeHints] = useState<string[]>([]);
   const [concepts, setConcepts] = useState<{ id: string; name: string }[]>([]);
+  const [rateLimit, setRateLimit] = useState<RateLimitInfo>({
+    remaining: DEFAULT_RATE_LIMIT,
+    limit: DEFAULT_RATE_LIMIT,
+    resetAt: null,
+    isLimited: false,
+  });
+  const [countdown, setCountdown] = useState<number>(0);
   const { toast } = useToast();
 
   const modes = [
@@ -58,6 +76,66 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
     { id: 'code' as const, icon: Code, label: 'Code Help' },
     { id: 'concepts' as const, icon: Network, label: 'Concepts' },
   ];
+
+  // Countdown timer for rate limit
+  useEffect(() => {
+    if (!rateLimit.isLimited || !rateLimit.resetAt) return;
+
+    const updateCountdown = () => {
+      const now = Date.now();
+      const remaining = Math.max(0, Math.ceil((rateLimit.resetAt! - now) / 1000));
+      setCountdown(remaining);
+
+      if (remaining <= 0) {
+        setRateLimit(prev => ({
+          ...prev,
+          isLimited: false,
+          remaining: prev.limit,
+        }));
+      }
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  }, [rateLimit.isLimited, rateLimit.resetAt]);
+
+  // Helper to update rate limit from response headers
+  const updateRateLimitFromResponse = useCallback((response: Response) => {
+    const remaining = response.headers.get('X-RateLimit-Remaining');
+    const resetAt = response.headers.get('X-RateLimit-Reset');
+    const limit = response.headers.get('X-RateLimit-Limit');
+
+    if (remaining !== null) {
+      setRateLimit(prev => ({
+        remaining: parseInt(remaining, 10),
+        limit: limit ? parseInt(limit, 10) : prev.limit,
+        resetAt: resetAt ? parseInt(resetAt, 10) : prev.resetAt,
+        isLimited: parseInt(remaining, 10) === 0,
+      }));
+    }
+  }, []);
+
+  // Handle rate limit error from response
+  const handleRateLimitError = useCallback(async (response: Response) => {
+    const data = await response.json();
+    const retryAfter = data.retryAfter || parseInt(response.headers.get('Retry-After') || '60', 10);
+    const resetAt = data.resetAt || Date.now() + retryAfter * 1000;
+
+    setRateLimit({
+      remaining: 0,
+      limit: rateLimit.limit,
+      resetAt,
+      isLimited: true,
+    });
+    setCountdown(retryAfter);
+
+    toast({
+      variant: "destructive",
+      title: "Rate Limit Reached",
+      description: `Please wait ${retryAfter} seconds before making another request.`,
+    });
+  }, [rateLimit.limit, toast]);
 
   const handleAIError = useCallback((error: string) => {
     toast({
@@ -69,6 +147,15 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
 
   // Streaming summary generation
   const generateSummary = useCallback(async () => {
+    if (rateLimit.isLimited) {
+      toast({
+        variant: "destructive",
+        title: "Rate Limit Active",
+        description: `Please wait ${countdown} seconds before making another request.`,
+      });
+      return;
+    }
+
     if (!noteContent.trim()) {
       setSummary('No content to summarize yet. Add some notes!');
       return;
@@ -91,6 +178,13 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
         },
         body: JSON.stringify({ mode: 'summarize', noteContent }),
       });
+
+      if (response.status === 429) {
+        await handleRateLimitError(response);
+        return;
+      }
+
+      updateRateLimitFromResponse(response);
 
       if (!response.ok) {
         const data = await response.json();
@@ -141,10 +235,19 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
     } finally {
       setLoading(false);
     }
-  }, [noteContent, handleAIError]);
+  }, [noteContent, handleAIError, rateLimit.isLimited, countdown, toast, handleRateLimitError, updateRateLimitFromResponse]);
 
   // Non-streaming API call for structured responses
   const callAI = useCallback(async (mode: 'explain' | 'quiz' | 'code'): Promise<string | null> => {
+    if (rateLimit.isLimited) {
+      toast({
+        variant: "destructive",
+        title: "Rate Limit Active",
+        description: `Please wait ${countdown} seconds before making another request.`,
+      });
+      return null;
+    }
+
     if (!noteContent.trim()) {
       return null;
     }
@@ -163,6 +266,13 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
       body: JSON.stringify({ mode, noteContent }),
     });
 
+    if (response.status === 429) {
+      await handleRateLimitError(response);
+      return null;
+    }
+
+    updateRateLimitFromResponse(response);
+
     if (!response.ok) {
       const data = await response.json();
       throw new Error(data.error || `Failed to get ${mode} response`);
@@ -170,7 +280,7 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
 
     const data = await response.json();
     return data.content;
-  }, [noteContent]);
+  }, [noteContent, rateLimit.isLimited, countdown, toast, handleRateLimitError, updateRateLimitFromResponse]);
 
   const generateExplanations = useCallback(async () => {
     if (!noteContent.trim()) {
@@ -324,6 +434,41 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
         <h2 className="font-serif font-semibold">AI Assistant</h2>
       </div>
 
+      {/* Rate Limit Indicator */}
+      <div className="px-4 py-2 border-b border-border">
+        <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+          <span className="flex items-center gap-1">
+            {rateLimit.isLimited ? (
+              <>
+                <AlertCircle className="w-3 h-3 text-destructive" />
+                <span className="text-destructive">Rate limited</span>
+              </>
+            ) : (
+              <>
+                <Clock className="w-3 h-3" />
+                <span>Requests remaining</span>
+              </>
+            )}
+          </span>
+          <span className={rateLimit.isLimited ? 'text-destructive font-medium' : ''}>
+            {rateLimit.isLimited ? `${countdown}s` : `${rateLimit.remaining}/${rateLimit.limit}`}
+          </span>
+        </div>
+        <Progress 
+          value={rateLimit.isLimited ? (countdown / 60) * 100 : (rateLimit.remaining / rateLimit.limit) * 100} 
+          className={`h-1.5 ${rateLimit.isLimited ? '[&>div]:bg-destructive' : ''}`}
+        />
+        {rateLimit.isLimited && (
+          <motion.p 
+            initial={{ opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-xs text-destructive mt-2 text-center"
+          >
+            Wait {countdown}s before next request
+          </motion.p>
+        )}
+      </div>
+
       {/* Mode Tabs */}
       <Tabs value={activeMode} onValueChange={(v) => handleModeChange(v as AIMode)} className="flex-1 flex flex-col">
         <TabsList className="grid grid-cols-5 mx-4 mt-4 bg-muted">
@@ -333,6 +478,7 @@ export default function AIAssistant({ noteContent }: AIAssistantProps) {
               value={mode.id}
               className="text-xs p-2"
               title={mode.label}
+              disabled={rateLimit.isLimited && mode.id !== 'concepts'}
             >
               <mode.icon className="w-4 h-4" />
             </TabsTrigger>
