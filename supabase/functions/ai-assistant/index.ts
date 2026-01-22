@@ -13,6 +13,43 @@ interface RequestBody {
   noteContent: string;
 }
 
+// Rate limiting configuration
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 10; // 10 requests per minute per user
+
+// In-memory rate limit store (resets on cold start)
+const rateLimitStore = new Map<string, { count: number; windowStart: number }>();
+
+function checkRateLimit(userId: string): { allowed: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const userLimit = rateLimitStore.get(userId);
+
+  if (!userLimit || now - userLimit.windowStart > RATE_LIMIT_WINDOW_MS) {
+    // Start a new window
+    rateLimitStore.set(userId, { count: 1, windowStart: now });
+    return { allowed: true };
+  }
+
+  if (userLimit.count >= MAX_REQUESTS_PER_WINDOW) {
+    const retryAfter = Math.ceil((userLimit.windowStart + RATE_LIMIT_WINDOW_MS - now) / 1000);
+    return { allowed: false, retryAfter };
+  }
+
+  // Increment count
+  userLimit.count++;
+  return { allowed: true };
+}
+
+// Clean up old entries periodically (prevent memory leak)
+function cleanupRateLimitStore() {
+  const now = Date.now();
+  for (const [userId, data] of rateLimitStore.entries()) {
+    if (now - data.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
+      rateLimitStore.delete(userId);
+    }
+  }
+}
+
 function getSystemPrompt(mode: AIMode): string {
   switch (mode) {
     case "summarize":
@@ -110,6 +147,28 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({ error: "Unauthorized" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Rate limiting check
+    const userId = claimsData.claims.sub as string;
+    cleanupRateLimitStore();
+    const rateCheck = checkRateLimit(userId);
+    
+    if (!rateCheck.allowed) {
+      return new Response(
+        JSON.stringify({ 
+          error: "Rate limit exceeded. Please try again later.",
+          retryAfter: rateCheck.retryAfter 
+        }),
+        { 
+          status: 429, 
+          headers: { 
+            ...corsHeaders, 
+            "Content-Type": "application/json",
+            "Retry-After": String(rateCheck.retryAfter)
+          } 
+        }
       );
     }
 
