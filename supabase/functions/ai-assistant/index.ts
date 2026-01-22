@@ -20,24 +20,42 @@ const MAX_REQUESTS_PER_WINDOW = 10; // 10 requests per minute per user
 // In-memory rate limit store (resets on cold start)
 const rateLimitStore = new Map<string, { count: number; windowStart: number }>();
 
-function checkRateLimit(userId: string): { allowed: boolean; retryAfter?: number } {
+function checkRateLimit(userId: string): { 
+  allowed: boolean; 
+  remaining: number; 
+  retryAfter?: number;
+  resetAt?: number;
+} {
   const now = Date.now();
   const userLimit = rateLimitStore.get(userId);
 
   if (!userLimit || now - userLimit.windowStart > RATE_LIMIT_WINDOW_MS) {
     // Start a new window
     rateLimitStore.set(userId, { count: 1, windowStart: now });
-    return { allowed: true };
+    return { 
+      allowed: true, 
+      remaining: MAX_REQUESTS_PER_WINDOW - 1,
+      resetAt: now + RATE_LIMIT_WINDOW_MS
+    };
   }
 
   if (userLimit.count >= MAX_REQUESTS_PER_WINDOW) {
     const retryAfter = Math.ceil((userLimit.windowStart + RATE_LIMIT_WINDOW_MS - now) / 1000);
-    return { allowed: false, retryAfter };
+    return { 
+      allowed: false, 
+      remaining: 0, 
+      retryAfter,
+      resetAt: userLimit.windowStart + RATE_LIMIT_WINDOW_MS
+    };
   }
 
   // Increment count
   userLimit.count++;
-  return { allowed: true };
+  return { 
+    allowed: true, 
+    remaining: MAX_REQUESTS_PER_WINDOW - userLimit.count,
+    resetAt: userLimit.windowStart + RATE_LIMIT_WINDOW_MS
+  };
 }
 
 // Clean up old entries periodically (prevent memory leak)
@@ -159,18 +177,29 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({ 
           error: "Rate limit exceeded. Please try again later.",
-          retryAfter: rateCheck.retryAfter 
+          retryAfter: rateCheck.retryAfter,
+          remaining: 0,
+          resetAt: rateCheck.resetAt
         }),
         { 
           status: 429, 
           headers: { 
             ...corsHeaders, 
             "Content-Type": "application/json",
-            "Retry-After": String(rateCheck.retryAfter)
+            "Retry-After": String(rateCheck.retryAfter),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": String(rateCheck.resetAt)
           } 
         }
       );
     }
+
+    // Add rate limit headers to all successful responses
+    const rateLimitHeaders = {
+      "X-RateLimit-Remaining": String(rateCheck.remaining),
+      "X-RateLimit-Reset": String(rateCheck.resetAt),
+      "X-RateLimit-Limit": String(MAX_REQUESTS_PER_WINDOW)
+    };
 
     const { mode, noteContent }: RequestBody = await req.json();
 
@@ -229,7 +258,7 @@ serve(async (req) => {
     // For streaming mode (summarize), return the stream directly
     if (mode === "summarize") {
       return new Response(response.body, {
-        headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+        headers: { ...corsHeaders, ...rateLimitHeaders, "Content-Type": "text/event-stream" },
       });
     }
 
@@ -239,7 +268,7 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({ content, mode }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { headers: { ...corsHeaders, ...rateLimitHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
     console.error("AI assistant error:", error);
