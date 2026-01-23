@@ -203,20 +203,46 @@ serve(async (req) => {
 
     const { mode, noteContent }: RequestBody = await req.json();
 
-    if (!noteContent || noteContent.trim().length === 0) {
+    // Validate mode
+    const validModes: AIMode[] = ["summarize", "explain", "quiz", "code"];
+    if (!mode || !validModes.includes(mode)) {
+      return new Response(
+        JSON.stringify({ error: "Invalid mode specified" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Validate noteContent
+    if (!noteContent || typeof noteContent !== "string" || noteContent.trim().length === 0) {
       return new Response(
         JSON.stringify({ error: "No note content provided" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
+    // Validate content length (max 50KB to prevent abuse)
+    const MAX_CONTENT_LENGTH = 50000;
+    if (noteContent.length > MAX_CONTENT_LENGTH) {
+      return new Response(
+        JSON.stringify({ error: `Content too large. Maximum ${MAX_CONTENT_LENGTH.toLocaleString()} characters allowed.` }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Sanitize content - strip null bytes and control characters
+    const sanitizedContent = noteContent.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
-      throw new Error("LOVABLE_API_KEY is not configured");
+      console.error("LOVABLE_API_KEY is not configured");
+      return new Response(
+        JSON.stringify({ error: "AI service temporarily unavailable" }),
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     const systemPrompt = getSystemPrompt(mode);
-    const userMessage = `Here are my notes:\n\n${noteContent}`;
+    const userMessage = `Here are my notes:\n\n${sanitizedContent}`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -247,11 +273,12 @@ serve(async (req) => {
           { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
+      // Log details server-side only, return generic error to client
       const text = await response.text();
       console.error("AI gateway error:", response.status, text);
       return new Response(
-        JSON.stringify({ error: "AI gateway error" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "AI service temporarily unavailable" }),
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -271,9 +298,11 @@ serve(async (req) => {
       { headers: { ...corsHeaders, ...rateLimitHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
+    // Log detailed error server-side only
     console.error("AI assistant error:", error);
+    // Return generic error to client to prevent information leakage
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ error: "An unexpected error occurred. Please try again." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
