@@ -86,7 +86,7 @@ export default function Landing() {
       </section>
 
       {/* Features Grid */}
-      <section className="py-20 px-6 bg-canvas">
+      <section className="py-20 px-6 bg-inherit border-none">
         <div className="container mx-auto max-w-6xl">
           <motion.div initial={{
           opacity: 0
